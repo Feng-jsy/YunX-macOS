@@ -6,6 +6,9 @@ plugins {
     id("org.jetbrains.kotlin.plugin.compose")
 }
 
+// ---- 平台判断：macOS（Apple Silicon）与 Windows 共用一套源码，原生依赖按 OS 条件引入 ----
+val isMac = System.getProperty("os.name").lowercase().contains("mac")
+
 dependencies {
     implementation(compose.desktop.currentOs)
     implementation(compose.material3)
@@ -26,21 +29,24 @@ dependencies {
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-swing:1.9.0")
 
     // Room -> 纯 JDBC SQLite
-    // ★ 用裁剪后的本地 jar：官方包 13.6 MB，含六个平台的原生库，本项目只跑 Windows。
-    //   只保留 org/sqlite/native/Windows（x86/x86_64/arm/arm64），其余代码与 META-INF 原样保留。
-    implementation(files("libs/sqlite-jdbc-3.47.1.0-win.jar"))
+    // Windows 用裁剪后的本地 jar（只留 Windows 原生库，省体积）；macOS 用官方完整版（含 mac 原生库）。
+    if (isMac) {
+        implementation("org.xerial:sqlite-jdbc:3.47.1.0")
+    } else {
+        implementation(files("libs/sqlite-jdbc-3.47.1.0-win.jar"))
+    }
     // Android 内置 org.json 的 JVM 等价物
     implementation("org.json:json:20240303")
     // 主题种子色（material-color-utilities 无公开仓库坐标；从 material 1.14.0 AAR 解包 classes.jar 本地引入）
     implementation(files("libs/material-color-utilities-1.0.0.jar"))
 
     // JavaFX MediaView 播放器（M6）：JFXPanel 经 SwingPanel 嵌入 Compose。
-    // 版本跟随 jvmToolchain(17)；发布目标只有 Windows，直接用 :win classifier（jar 内含原生库，
-    // 首次运行由 JavaFX 自动解到用户目录缓存，jpackage 无需额外处理）
-    implementation("org.openjfx:javafx-base:17.0.13:win")
-    implementation("org.openjfx:javafx-graphics:17.0.13:win")
-    implementation("org.openjfx:javafx-media:17.0.13:win")
-    implementation("org.openjfx:javafx-swing:17.0.13:win")
+    // 版本跟随 jvmToolchain(17)；Windows 用 :win、macOS(Apple Silicon) 用 :mac-aarch64 classifier。
+    val javafxClassifier = if (isMac) "mac-aarch64" else "win"
+    implementation("org.openjfx:javafx-base:17.0.13:$javafxClassifier")
+    implementation("org.openjfx:javafx-graphics:17.0.13:$javafxClassifier")
+    implementation("org.openjfx:javafx-media:17.0.13:$javafxClassifier")
+    implementation("org.openjfx:javafx-swing:17.0.13:$javafxClassifier")
 
     // GFM Markdown 渲染（README / 更新说明）。注意：必须停留在 0.33.x ——
     // 0.34.0 起改用 Compose 1.8+ 的 BasicText 签名（含 TextAutoSize），与项目锁定的
@@ -71,7 +77,11 @@ dependencies {
     //   发布包不随带这个 120MB 的 jar，改由打包脚本用 JcefNativesPacker 重打成
     //   app\jcef-natives.tar.gz（裁剪语言包），首次使用时由 JcefNativesInstaller 解开。
     //   见 portable-package.ps1 [2c/5] 与 ui/jcef/JcefNativesInstaller.kt。
-    implementation("me.friwi:jcef-natives-windows-amd64:jcef-1770317+cef-132.3.1+g144febe+chromium-132.0.6834.83")
+    if (isMac) {
+        implementation("me.friwi:jcef-natives-macosx-arm64:jcef-1770317+cef-132.3.1+g144febe+chromium-132.0.6834.83")
+    } else {
+        implementation("me.friwi:jcef-natives-windows-amd64:jcef-1770317+cef-132.3.1+g144febe+chromium-132.0.6834.83")
+    }
 
     // tar.gz 读写：CEF 原生库发布包（打包期重打成 gzip，运行期自解包）
     // jcefmaven 已传递引入 commons-compress，这里显式声明版本以保证稳定
@@ -84,7 +94,15 @@ dependencies {
 }
 
 kotlin {
-    jvmToolchain(17)
+    // ★ 不强制 jvmToolchain(17)：本机（macOS）只有 JDK 21，toolchain 会触发自动下载 JDK 17。
+    //   改为用当前 JDK 编译、目标字节码锁定 Java 17，双平台都无需额外安装 JDK。
+    compilerOptions {
+        jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17)
+    }
+}
+java {
+    sourceCompatibility = org.gradle.api.JavaVersion.VERSION_17
+    targetCompatibility = org.gradle.api.JavaVersion.VERSION_17
 }
 
 // ---- 版本号单一来源：仓库根目录 version.txt（jpackage / 便携包 / 安装包 / 应用内版本全部由它派生）----
@@ -127,13 +145,12 @@ val generateAppVersion by tasks.registering {
 }
 kotlin.sourceSets["main"].kotlin.srcDir(generateAppVersion)
 
-// ---- 遮罩选位器 EXE 打进 jar 资源 ----
-// picker\PositionPicker.cs 由 run.ps1 / portable-package.ps1 用 csc 编到仓库根 build\ 下，
-// 这里把它作为资源塞进 jar 的 yunx\ 前缀；运行期由 util/PositionPicker.kt 释放到 %TEMP% 再执行，
-// 因此发布包目录里不再出现这个原生 exe。（文件不存在时 from() 会静默跳过）
-tasks.named<ProcessResources>("processResources") {
-    val pickerExe = rootProject.layout.projectDirectory.file("build/YunX-PositionPicker.exe")
-    from(pickerExe) { into("yunx") }
+// ---- 遮罩选位器 EXE 打进 jar 资源（Windows 专属）：macOS 无此原生 exe，跳过注入 ----
+if (!isMac) {
+    tasks.named<ProcessResources>("processResources") {
+        val pickerExe = rootProject.layout.projectDirectory.file("build/YunX-PositionPicker.exe")
+        from(pickerExe) { into("yunx") }
+    }
 }
 
 tasks.withType<Test> {
@@ -176,7 +193,8 @@ tasks.register<JavaExec>("testInProcess") {
     )
 }
 
-// 编译 native/darkmode.cpp → build/native/darkmode.dll（托盘原生菜单暗色桥接层）
+// 编译 native/darkmode.cpp → build/native/darkmode.dll（托盘原生菜单暗色桥接层，Windows 专属）
+if (!isMac) {
 val nativeSrcDir = file("native")
 val nativeOutDir = layout.buildDirectory.dir("native").get().asFile
 val darkModeSrc = File(nativeSrcDir, "darkmode.cpp")
@@ -233,6 +251,7 @@ tasks.withType<JavaExec> {
     val jvmBin = File(System.getProperty("java.home"), "bin").absolutePath
     systemProperty("java.library.path", "${nativeOutDir.absolutePath};$jvmBin")
 }
+}
 
 // 收集运行时依赖 jar 路径（供便携版 app-image 打包）
 tasks.register("printRuntimeClasspath") {
@@ -261,7 +280,7 @@ compose.desktop {
     application {
         mainClass = "com.yunx.app.MainKt"
         nativeDistributions {
-            targetFormats(TargetFormat.Exe)
+            targetFormats(if (isMac) TargetFormat.Dmg else TargetFormat.Exe)
             // sqlite-jdbc 通过反射加载 java.sql.Driver，jlink 自动检测不到，必须显式声明；
             // jdk.httpserver 是视频预览的本地回环代理（com.sun.net.httpserver），
             // jdk.unsupported.desktop 是 JavaFX 与 Swing 互操作（JFXPanel 里的 jdk.swing.interop）——
@@ -270,6 +289,11 @@ compose.desktop {
             // 每用户安装（%LOCALAPPDATA%\Programs），无需管理员权限
             windows {
                 perUserInstall = true
+            }
+            macOS {
+                // 应用图标（.icns，由 icon.png 经 iconutil 生成）
+                iconFile.set(file("src/main/resources/icon.icns"))
+                bundleID = "com.yunx.desktop"
             }
             packageName = "YunX-Desktop"
             packageVersion = appVersion

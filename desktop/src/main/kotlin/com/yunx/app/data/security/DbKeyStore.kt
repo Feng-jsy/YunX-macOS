@@ -217,12 +217,26 @@ object DbKeyStore {
         )
     }
 
-    /** Windows MachineGuid（HKLM\SOFTWARE\Microsoft\Cryptography），普通用户可读 */
-    private fun machineGuid(): String? = runCatching {
-        Advapi32Util.registryGetStringValue(
-            WinReg.HKEY_LOCAL_MACHINE, "SOFTWARE\\Microsoft\\Cryptography", "MachineGuid"
-        ).takeIf { it.isNotBlank() }
-    }.getOrNull()
+    /**
+     * 机器唯一标识：
+     * - Windows：MachineGuid（HKLM\SOFTWARE\Microsoft\Cryptography）；
+     * - macOS：IOPlatformUUID（硬件 UUID，稳定且机器唯一，经 ioreg 读取）；
+     * - 其它平台：返回 null（由 [machineFingerprint] 判定为「暂时不可用」）。
+     */
+    private fun machineGuid(): String? = when {
+        isWindows() -> runCatching {
+            Advapi32Util.registryGetStringValue(
+                WinReg.HKEY_LOCAL_MACHINE, "SOFTWARE\\Microsoft\\Cryptography", "MachineGuid"
+            ).takeIf { it.isNotBlank() }
+        }.getOrNull()
+        else -> runCatching {
+            val process = ProcessBuilder("ioreg", "-rd1", "-c", "IOPlatformExpertDevice").start()
+            val text = process.inputStream.bufferedReader(Charsets.UTF_8).use { it.readText() }
+            process.waitFor()
+            Regex("\"IOPlatformUUID\"\\s*=\\s*\"([^\"]+)\"")
+                .find(text)?.groupValues?.get(1)?.takeIf { it.isNotBlank() }
+        }.getOrNull()
+    }
 
     /** 较为严格档：Windows DPAPI（CryptProtectData，绑定当前登录用户） */
     private fun wrapDpapi(key: ByteArray): String {

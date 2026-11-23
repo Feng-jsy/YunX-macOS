@@ -513,15 +513,18 @@ fun ThemeScreen(
                     )
                     Spacer(modifier = Modifier.height(12.dp))
                     PositionDropdown(
-                        options = listOf(
-                            SettingsRepository.WINDOW_POS_CENTER to "中间",
-                            SettingsRepository.WINDOW_POS_TOP_LEFT to "左上角",
-                            SettingsRepository.WINDOW_POS_BOTTOM_LEFT to "左下角",
-                            SettingsRepository.WINDOW_POS_TOP_RIGHT to "右上角",
-                            SettingsRepository.WINDOW_POS_BOTTOM_RIGHT to "右下角",
-                            SettingsRepository.WINDOW_POS_LAST to "上次关闭位置",
-                            SettingsRepository.WINDOW_POS_CUSTOM to "自定义"
-                        ),
+                        options = buildList {
+                            add(SettingsRepository.WINDOW_POS_CENTER to "中间")
+                            add(SettingsRepository.WINDOW_POS_TOP_LEFT to "左上角")
+                            add(SettingsRepository.WINDOW_POS_BOTTOM_LEFT to "左下角")
+                            add(SettingsRepository.WINDOW_POS_TOP_RIGHT to "右上角")
+                            add(SettingsRepository.WINDOW_POS_BOTTOM_RIGHT to "右下角")
+                            add(SettingsRepository.WINDOW_POS_LAST to "上次关闭位置")
+                            // 「自定义」依赖 Windows 原生遮罩进程（PositionPicker.exe），macOS 不提供
+                            if (com.yunx.app.util.WindowsTitleBar.isWindows) {
+                                add(SettingsRepository.WINDOW_POS_CUSTOM to "自定义")
+                            }
+                        },
                         selected = startupPosition,
                         onSelect = {
                             startupPosition = it
@@ -530,8 +533,10 @@ fun ThemeScreen(
                         // 展开后把页面下滑到列表底边可见
                         onExpandBottom = { revealBottomPx = it }
                     )
-                    // 选了「自定义」才出现「设置位置」：打开全屏遮罩拖动站位框
-                    if (startupPosition == SettingsRepository.WINDOW_POS_CUSTOM) {
+                    // 选了「自定义」才出现「设置位置」：打开全屏遮罩拖动站位框（macOS 无此能力）
+                    if (startupPosition == SettingsRepository.WINDOW_POS_CUSTOM &&
+                        com.yunx.app.util.WindowsTitleBar.isWindows
+                    ) {
                         Spacer(modifier = Modifier.height(12.dp))
                         Row(
                             modifier = Modifier.fillMaxWidth(),

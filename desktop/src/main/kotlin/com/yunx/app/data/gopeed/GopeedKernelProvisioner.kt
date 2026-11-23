@@ -89,6 +89,16 @@ object GopeedKernelProvisioner {
         }
     }
 
+    /** 本机对应的官方包系统后缀：Windows → windows，macOS → macos，其余 → linux */
+    private fun osSuffix(): String {
+        val os = System.getProperty("os.name").orEmpty().lowercase()
+        return when {
+            os.contains("win") -> "windows"
+            os.contains("mac") -> "macos"
+            else -> "linux"
+        }
+    }
+
     /**
      * 查询官方最新 Release，拼出本机可用的内核计划。
      * @param mirrorPrefix 调用方指定的镜像前缀；null/空走 GitHubMirror 自动选最快（或用户固定）
@@ -98,12 +108,12 @@ object GopeedKernelProvisioner {
         val json = fetchLatestJson()
         val tag = json.optString("tag_name")
         if (tag.isBlank()) throw IllegalStateException("官方 Release 缺少版本号")
-        val wanted = "$ASSET_PREFIX$tag-windows-${archSuffix()}$ASSET_ARCH_SUFFIX"
+        val wanted = "$ASSET_PREFIX$tag-${osSuffix()}-${archSuffix()}$ASSET_ARCH_SUFFIX"
         val asset = json.optJSONArray("assets")?.let { arr ->
             (0 until arr.length())
                 .mapNotNull { arr.optJSONObject(it) }
                 .firstOrNull { it.optString("name").equals(wanted, ignoreCase = true) }
-        } ?: throw IllegalStateException("官方 Release（$tag）里没有 Windows 内核包 $wanted")
+        } ?: throw IllegalStateException("官方 Release（$tag）里没有本平台内核包 $wanted")
         val direct = asset.optString("browser_download_url")
         if (direct.isBlank()) throw IllegalStateException("内核包缺少下载地址")
         Plan(
